@@ -243,7 +243,7 @@ from config_loader import load_commodities
 from run_batch import run_batch
 
 commodities = load_commodities()   # every commodity in commodities.yaml
-result = run_batch(commodities=commodities)
+result = run_batch(commodities=commodities,parallel=True, max_workers=4)
 
 print('results:', len(result.results), 'errors:', result.errors)
 print('consolidated summary:', result.consolidated_summary_path)
@@ -293,6 +293,35 @@ run that redirected only `output_root` genuinely leaked 3 real pickles into
 history.xlsx` row with fast=True's unreliable (few-trial) ranking — caught
 and corrected after the fact, which is what prompted adding
 `saved_models_root` as its own parameter.
+
+### Checking which drivers got selected (without waiting for training)
+`run_batch()`'s own sequence runs driver selection for **every** commodity
+in the batch, completely, in one pass — via `_ensure_drivers_selected()` —
+before the (much slower) model-training loop even starts. So while a batch
+is still training, every commodity's `config/drivers/selected/{id}.yaml`
+has already been written and finalized; there's nothing extra to run, just
+open the file:
+```bash
+cat config/drivers/selected/copper.yaml
+```
+
+To **preview** what would get selected without running `run_batch()` at
+all (e.g. to sanity-check a `feature_selection.yaml` change before
+committing to a real run), call `select_drivers()` directly with
+`force=True` — this only changes what gets *read* (falls back to the full
+candidate pool), it never calls `write_selected_yaml`/`promote_to_selected`,
+so nothing on disk changes no matter how many times you run it:
+```python
+import sys
+for p in ("src", "src/data", "src/features"):
+    sys.path.insert(0, p)
+from config_loader import load_commodity
+from feature_selection import select_drivers
+
+commodity = load_commodity("copper")
+result = select_drivers(commodity, force=True)   # read-only preview, writes nothing
+print([d["label"] for d in result.selected_drivers])
+```
 
 ### Where the client-facing output actually is
 `outputs/{commodity_id}/{horizon}/final_forecast_file.xlsx` and
@@ -535,6 +564,33 @@ of what the statistics say.
     `feature_selection.yaml`'s thresholds and wanting it to actually take
     effect everywhere) — this doesn't require hand-editing `commodities.yaml`
     first.
+
+- **Want to add or discard a specific driver directly, without re-running
+  selection?** `config/drivers/selected/{id}.yaml` is meant to be
+  hand-editable after the fact — its `selected_drivers` list is the same
+  simple schema as the candidates file:
+  ```yaml
+  selected_drivers:
+  - column: 6
+    label: Copper — Copper Concentrate Prices — Europe
+    unit: RMB/ metal metric ton
+  ```
+  `column` (1-indexed position in that commodity's raw `_ext_var.xlsx`) is
+  the only field that matters functionally — get it right and everything
+  downstream works. `label`/`unit` are documentation only. Lag is never
+  stored here — it's recomputed fresh from the ensemble Pearson+Spearman
+  search every time the file is loaded, so there's no lag value to edit.
+  To discard a driver, delete its entry; to add one, append a new
+  `{column, label, unit}` entry for a real column in that commodity's raw
+  file. Nothing else needs touching, as long as `drivers_status: selected`
+  + `drivers_config: config/drivers/selected/{id}.yaml` are already set in
+  `commodities.yaml` (true for any commodity that's been through selection
+  once). If you'd rather force a driver in/out *before* selection runs, so
+  it goes through the real statistical process with that constraint instead
+  of overriding the result afterward, use `must_include_drivers`/
+  `force_exclude_drivers` in `config/drivers/candidates/{id}.yaml` instead
+  (Section 4) — that only takes effect on the next actual selection run,
+  not on an already-finalized `selected/{id}.yaml`.
 
 - **The underlying price/driver Excel file was refreshed** (new months of
   data)? No special step — just re-run. The pipeline always reads the latest
