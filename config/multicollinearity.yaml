@@ -1,0 +1,13 @@
+# Config for the multicollinearity check applied to internal engineered
+# features (src/features/internal_features.py's output) before they reach
+# Random Forest / LightGBM and their driver-extended versions. Mirrors the
+# same idea as feature_selection.py's redundancy check for external
+# drivers, applied here to the internal price-history features instead --
+# selected drivers themselves are never touched by this check, they already
+# went through their own redundancy pass during driver selection.
+#
+# Candidates are ranked by |correlation with price| descending, kept
+# greedily, and any feature whose correlation with an already-kept feature
+# exceeds this threshold is dropped. Nothing here is hardcoded in code.
+enabled: true
+correlation_threshold: 0.7

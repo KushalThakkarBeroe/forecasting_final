@@ -1,0 +1,17 @@
+# Config for src/features/internal_features.py (calendar flags + core
+# internal features). All lag/window sizes below are expressed in MONTHS.
+# src/features/internal_features.py scales every one of these to the
+# commodity's actual frequency, preserving the same real-world time span:
+# e.g. 12 always means "1 year ago," whether that's 12 monthly periods or
+# 4 quarterly periods (a quarterly commodity's "3-month lag" is 1 period,
+# not 3). Nothing here is hardcoded in code.
+
+lag_periods_months: [1, 2, 3, 6, 12]
+roll_window_months: [3, 6, 12]
+
+# "3-year context" window (rolling_mean_36/rolling_std_36/
+# price_to_rolling_mean_36) — separate from roll_window_months because it
+# needs its own min_periods floor (see below), not shared with the shorter
+# windows.
+long_window_months: 36
+long_window_min_periods_months: 12

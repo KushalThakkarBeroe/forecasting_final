@@ -1,0 +1,23 @@
+# Config for src/models/driver_projection.py (forecast-on-forecast driver
+# projection). Methodology choices below are reasonable defaults, all
+# changeable without touching code.
+
+# How far into the future to project each driver, in months (scaled to the
+# commodity's frequency the same way internal_features.py scales its
+# lag/window sizes). 18 matches the long-term horizon's M18 upper bound
+# (config/horizon_defaults.yaml).
+max_horizon_months: 18
+
+# A lightweight univariate model: damped-trend exponential smoothing
+# (Holt's method, damped so long-horizon projections
+# don't extrapolate a trend indefinitely — important at 18 periods out).
+# A seasonal component is added only if the driver has at least this many
+# full cycles of history (2 years of monthly data, 2 years of quarterly
+# data) — fitting a seasonal model on less than that is unreliable.
+damped_trend: true
+min_cycles_for_seasonal: 2
+
+# Below this many valid observations, skip the trend model entirely and
+# fall back to a flat projection at the driver's last known value (a damped
+# trend fit on very little data is not trustworthy either way).
+min_obs_for_trend_model: 8

@@ -1,0 +1,129 @@
+# Scoring engine config: the single source of truth for src/scoring/*.py —
+# weights, thresholds, and penalties are config, never hardcoded in code.
+#
+# NOTE — apparent gap-band, not resolved here, just flagged:
+# `eligibility_thresholds.min_mape_accuracy_pct` (85) and
+# `disqualification_criteria.mape_accuracy_below_pct` (75) are two different
+# numbers. A model scoring MAPE Accuracy 80% is therefore "not eligible for
+# recommendation" per Eligibility Thresholds but NOT "hard disqualified"
+# (score = 0) per Disqualification Criteria. Both values are intentional —
+# do not silently merge them into one threshold without confirming the
+# intended behavior for that gap band.
+
+data_adequacy:
+  # Gate on how much of an external driver's expected data is actually
+  # present.
+  min_data_coverage_pct: 70
+  # < min_data_coverage_pct  -> exclude the driver from the model entirely
+  # min_data_coverage_pct-100% -> include, with missing values imputed
+  imputation_methods_allowed: [spline, moving_average]
+  # Which of imputation_methods_allowed actually gets applied.
+  # moving_average is the simpler, more robust default (spline can
+  # overshoot on short/volatile series); switch here, no code change needed.
+  default_imputation_method: moving_average
+  imputation_spline_order: 3
+  imputation_moving_average_window: 3
+
+# lookback_window: NO LONGER READ by src/scoring/composite_score.py -- kept
+# here only as a record of the original spec. composite_score.py now uses
+# every evaluation cycle since validation.yaml's backtest_start_date (a
+# fixed, growing-forward anchor), not a rolling cap of the most recent N.
+# See composite_score.py's own module docstring for the full reasoning.
+lookback_window:
+  monthly_cycles: 12   # original spec wording, not enforced
+  quarterly_cycles: 6  # original spec wording, not enforced
+
+criterion_weights:
+  mape_accuracy_pct: 50
+  directional_accuracy_pct: 25
+  forecast_dynamism_pct: 15
+  recency_bonus_pct: 10
+
+eligibility_thresholds:
+  min_mape_accuracy_pct: 85       # below this, not eligible for recommendation
+  min_directional_accuracy_pct: 55  # below this, not eligible for recommendation
+  min_evaluated_cycles: 3          # minimum history required before a model can be scored
+
+penalty_flags:
+  flat_line_lt_penalty_points: -15
+  flat_stddev_threshold_pct: 2     # forecast StdDev below this % of mean price triggers the flat-line penalty
+  outlier_cap_penalty_points: -5   # applied when forecasts required outlier capping
+  # A forecast is flagged as requiring capping if any predicted value in the
+  # lookback window falls outside [min(price)*outlier_min_multiplier,
+  # max(price)*outlier_max_multiplier].
+  outlier_min_multiplier: 0.3
+  outlier_max_multiplier: 3.0
+
+# Forecast Dynamism: standard deviation of the forecasted steps, penalizing
+# flat-line forecasts (especially at Long Term). dynamism_reference_pct is
+# an inferred default, not a settled value — flagged for confirmation
+# before relying on absolute Dynamism scores across commodities of very
+# different volatility. Forecast StdDev is normalized as a % of the
+# forecast's own mean (comparable across commodities/price levels), then
+# scaled linearly to 100 at this reference level and capped there.
+forecast_dynamism:
+  dynamism_reference_pct: 8   # normalized forecast StdDev (%) that earns a full 100 Dynamism score
+
+# Recency Bonus: extra weight given to the most recent evaluation cycles vs
+# older ones — the most recent recency_bonus_cycle_count cycles are
+# up-weighted by recency_bonus_multiplier. recency_bonus_multiplier's
+# magnitude is an inferred default, flagged for confirmation. Recency score
+# = the same per-cycle Accuracy (100 - MAPE) used for the Accuracy
+# component, but averaged with the most recent cycles up-weighted — so a
+# model whose recent cycles outperform its older ones scores higher on
+# Recency than on plain Accuracy, and vice versa.
+recency_bonus:
+  recency_bonus_cycle_count: 2
+  recency_bonus_multiplier: 1.5
+
+normalized_bias_penalty:
+  # Normalized Bias (Mean Percentage Error): measures systematic
+  # over/under-forecasting. Bands below are informational/decision-support;
+  # only the "poor" band (>±10%) actually triggers the penalty.
+  bands:
+    good_abs_pct: 3      # |MPE| <= 3%  -> Good
+    warning_abs_pct: 5   # |MPE| <= 5%  -> Warning
+    poor_abs_pct: 10      # |MPE| > 10%  -> Poor, penalty triggers
+  penalty_points: -10
+
+horizon_overrides:
+  short_medium_term:
+    directional_accuracy_method: rolling_mom   # measured step-by-step vs. the previous predicted step
+  long_term:
+    directional_accuracy_method: fixed_anchor  # vs. today's actual price, evaluated at the 12-month-out point
+
+composite_score_formula:
+  # (Accuracy*50 + DirectionalAccuracy*25 + Dynamism*15 + Recency*10) / 100
+  #   - flat_line_penalty - outlier_penalty - normalized_bias_penalty
+  # Component scores (Accuracy, DA, Dynamism, Recency) are each scaled
+  # 0-100 before weighting. Floor = 0.
+  floor: 0
+
+disqualification_criteria:
+  # Score = 0 (FAIL) if any of these trigger — independent of other scores.
+  mape_accuracy_below_pct: 75
+  directional_accuracy_below_pct: 55
+  long_term_ext_var_model_without_robustness_gate_pass: true
+  horizon_ineligible_technique: true   # e.g. a Short-Term-only technique cannot be recommended at Long Term
+
+confidence_tiers:
+  high:
+    min_score: 85
+    action: "Proceed with the recommendation."
+  medium:
+    min_score: 75
+    max_score: 84
+    action: "Monitor for 2 more evaluation cycles before fully committing."
+  low:
+    max_score: 74
+    action: "Flag to the client for manual review."
+
+robustness_gate:
+  # Required for external-variable models (incl. VAR/VECM) to be eligible
+  # at Long Term. Both tests must pass.
+  ablation_test:
+    description: "MAPE must drop more than 1.5 percentage points when the driver is removed."
+    min_mape_drop_pp: 1.5
+  permutation_test:
+    description: "Driver's contribution must be statistically significant, not noise."
+    max_p_value: 0.05

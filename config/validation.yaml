@@ -1,0 +1,10 @@
+# Internal backtest validation window.
+#
+# backtest_start_date is a FIXED anchor, not a rolling lookback count.
+# Every technique's sliding-window backtest (n_windows, in every
+# src/models/*.py) now spans every period from this date through the
+# latest available actual data point -- the window count therefore GROWS
+# every cycle as new data arrives, instead of staying pinned at a fixed
+# count of the most recent N periods.
+#
+backtest_start_date: "2025-03-01"

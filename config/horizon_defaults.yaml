@@ -1,0 +1,16 @@
+# Horizon period ranges keyed by frequency — looked up at runtime by
+# commodities.yaml's `frequency` field, not repeated per commodity.
+#
+# quarterly values are PLACEHOLDERS — 6 vs 9 evaluation cycles for
+# quarterly data is still an open question. Confirm before relying on
+# quarterly forecasts.
+
+monthly:
+  short: [1, 3]
+  medium: [4, 6]
+  long: [7, 18]
+
+quarterly:
+  short: [1, 1]     # placeholder — confirm before relying on this
+  medium: [2, 2]    # placeholder
+  long: [3, 6]       # placeholder

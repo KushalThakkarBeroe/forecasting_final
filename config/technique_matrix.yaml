@@ -1,0 +1,167 @@
+# Per-technique horizon eligibility. Eligibility is config data, not
+# hardcoded in src/scoring/ or src/pipeline/.
+#
+# eligibility values: yes | no | gated
+#   "gated" = requires passing the Robustness Gate (config/scoring.yaml
+#   robustness_gate section) before being eligible at that horizon.
+
+techniques:
+  - name: arima
+    display_name: "ARIMA"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/arima.py
+
+  - name: sarima
+    display_name: "SARIMA"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/sarima.py
+
+  - name: ets
+    display_name: "ETS (Exponential Smoothing)"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/ets.py
+
+  - name: rf
+    display_name: "Random Forest (RF)"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/rf.py
+
+  - name: lgbm
+    display_name: "LightGBM (LGBM)"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/lgbm.py
+
+  - name: lstm
+    category: univariate
+    # Deliberately disabled: no src/models/lstm.py exists at all (never
+    # wired into run_horizon.py's runners dict), so this is permanently
+    # "no" regardless of what's installed on any given machine. All 3 "no"
+    # values are quoted deliberately -- an unquoted bare `no` parses as the
+    # YAML boolean False, not the string "no", and run_horizon.py's gate
+    # checks `if eligibility == "no":` (a string comparison), so an
+    # unquoted no would silently never trigger the skip.
+    eligibility: { short: "no", medium: "no", long: "no" }
+    module: src/models/lstm.py
+
+  - name: tst
+    display_name: "TST (Time Series Transformer)"
+    category: univariate
+    # Deep-learning technique, deliberately disabled everywhere: src/
+    # models/tst.py was moved to modeling/archive/models_deep_learning_
+    # disabled/, so run_horizon.py's `from tst import run_tst` raises
+    # ImportError and tst is never added to the runners dict -- permanently
+    # "no" regardless of what's installed on any given machine, not
+    # conditional on torch being present. Move the file back to
+    # src/models/ to re-enable.
+    eligibility: { short: "no", medium: "no", long: "no" }
+    module: src/models/tst.py
+
+  - name: tft
+    display_name: "TFT (Temporal Fusion Transformer)"
+    category: univariate
+    # Deep-learning technique, deliberately disabled everywhere -- same
+    # reasoning/mechanism as tst above (src/models/tft.py archived to
+    # modeling/archive/models_deep_learning_disabled/). tft_ext (below,
+    # under uses_external_variables) shares this same run_tft function and
+    # is disabled for the identical reason.
+    eligibility: { short: "no", medium: "no", long: "no" }
+    module: src/models/tft.py
+
+  - name: markov_switching
+    display_name: "Markov-Switching Regression (NEW)"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/markov_switching.py
+
+  - name: rf_ext
+    display_name: "RF + External Variables"
+    category: uses_external_variables
+    eligibility: { short: yes, medium: yes, long: gated }
+    module: src/models/rf_ext.py
+
+  - name: lgbm_ext
+    display_name: "LGBM + External Variables"
+    category: uses_external_variables
+    eligibility: { short: yes, medium: yes, long: gated }
+    module: src/models/lgbm_ext.py
+
+  - name: arimax
+    display_name: "ARIMAX"
+    category: uses_external_variables
+    eligibility: { short: yes, medium: yes, long: gated }
+    module: src/models/arimax.py
+
+  - name: sarimax
+    display_name: "SARIMAX"
+    category: uses_external_variables
+    eligibility: { short: yes, medium: yes, long: gated }
+    module: src/models/sarimax.py
+
+  - name: tst_ext
+    display_name: "TST + External Variables"
+    category: uses_external_variables
+    # Deep-learning technique, deliberately disabled everywhere: no
+    # src/models/tst_ext.py has ever existed (never wired into
+    # run_horizon.py's runners dict) -- permanently "no", not conditional
+    # on torch being present.
+    eligibility: { short: "no", medium: "no", long: "no" }
+    module: src/models/tst_ext.py
+
+  - name: tft_ext
+    display_name: "TFT + External Variables"
+    category: uses_external_variables
+    # Deep-learning technique, deliberately disabled everywhere -- shares
+    # tft's run_tft function (see univariate tft entry above), which was
+    # archived to modeling/archive/models_deep_learning_disabled/tft.py.
+    eligibility: { short: "no", medium: "no", long: "no" }
+    module: src/models/tft_ext.py
+
+  - name: var
+    display_name: "VAR (NEW)"
+    category: multivariate_uses_external_variables
+    eligibility: { short: yes, medium: yes, long: gated }
+    module: src/models/var_vecm.py
+
+  - name: vecm
+    display_name: "VECM (NEW)"
+    category: multivariate_uses_external_variables
+    # Split from a combined "VAR/VECM" technique (which picked one
+    # internally via a cointegration test, hiding which model actually
+    # ran) -- now its own row, run only when the Johansen test confirms
+    # price and the drivers are actually cointegrated (rank >= 1); a
+    # commodity with no cointegration shows no VECM row at all, never a
+    # VAR result mislabeled as VECM.
+    eligibility: { short: yes, medium: yes, long: gated }
+    module: src/models/var_vecm.py
+
+  - name: arima_garch
+    display_name: "ARIMA + GARCH"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/arima_garch.py
+
+  - name: sarima_garch
+    display_name: "SARIMA + GARCH"
+    category: univariate
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: src/models/sarima_garch.py
+
+  - name: benchmark
+    display_name: "Benchmark"
+    category: reference
+    # Not a real forecasting technique -- Beroe's own past forecast, scored
+    # here (src/scoring/composite_score.py's score_benchmark_result) purely
+    # so it can be shown alongside real techniques in Scoring Detail using
+    # the identical composite formula, including the same hard-
+    # disqualification rule, for direct comparison. Always "yes" everywhere
+    # since none of horizon-ineligibility/robustness-gating apply to it --
+    # its disqualification is driven entirely by its own accuracy/DA numbers.
+    # Deliberately kept OUT of recommend()'s candidate pool at every call
+    # site -- it must never be selected as "our" recommended technique.
+    eligibility: { short: yes, medium: yes, long: yes }
+    module: null

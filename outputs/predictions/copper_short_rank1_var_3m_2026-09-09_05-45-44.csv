@@ -1,0 +1,4 @@
+Commodity,Horizon,Rank,Technique,Composite Score,Trained Through,Step,Date,Predicted
+copper,short,1,var,76.5566,2026-05-01,1,2026-06-01,13662.738337708848
+copper,short,1,var,76.5566,2026-05-01,2,2026-07-01,13823.950051460859
+copper,short,1,var,76.5566,2026-05-01,3,2026-08-01,13989.640549128711

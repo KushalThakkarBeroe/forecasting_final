@@ -1,0 +1,136 @@
+# Config for src/features/feature_selection.py (candidates -> selected
+# drivers). Nothing here is hardcoded in code — tune and rerun without
+# touching src/.
+#
+# data-richness coverage threshold is intentionally NOT duplicated here —
+# it reads config/scoring.yaml's data_adequacy.min_data_coverage_pct, the
+# same threshold external_feature_merge.py uses, so there's one source of
+# truth for "how much missing data is too much" across the whole pipeline.
+
+# Number of RF/LightGBM refits (different random seeds) used to check that
+# a candidate's importance ranking is stable, not a fluke of one random fit.
+n_stability_runs: 10
+
+# A candidate's stability score is 1 - (std of its rank across the
+# n_stability_runs refits) / (number of eligible candidates) — near 1 means
+# it ranked in about the same place every run, near 0 means its rank
+# bounced around. Candidates below this score are excluded even if their
+# average importance looks good.
+min_stability_score: 0.5
+
+# How the final selected set is picked from the candidates that passed the
+# data-richness gate and the stability check, ranked by combined_score
+# (each candidate's RF/LightGBM/SHAP importances, each normalized to sum to
+# 1 across candidates, then averaged — so combined_score is already a
+# "share of total importance", e.g. 0.15 = this driver accounts for 15% of
+# the combined importance signal among this commodity's candidates).
+#
+#   top_n                 - take the top max_selected_drivers by combined_score.
+#   threshold             - take every candidate with combined_score >=
+#                           min_contribution_pct / 100, regardless of count.
+#   relative_threshold    - take every candidate with combined_score >=
+#                           relative_threshold_multiplier * (1 / N), where N is
+#                           the number of eligible candidates for that
+#                           commodity. Scales automatically with candidate
+#                           count: "fair share" is 25% when N=4, ~7.7% when
+#                           N=13 (soybean), so a fixed percentage cutoff would
+#                           be too strict for some commodities and too loose
+#                           for others — this doesn't have that problem.
+#   correlation_redundancy - keep every candidate whose |Pearson vs price| >
+#                           price_correlation_threshold, then drop any of
+#                           those that are correlated with an already-kept
+#                           candidate above redundancy_threshold (keeping
+#                           whichever has the higher |Pearson vs price|).
+#                           Ignores combined_score entirely.
+#   four_layer_or         - the pipeline's current active method. A
+#                           candidate is selected if it passes ANY of 4
+#                           independent criteria (OR, not AND -- no
+#                           requirement to pass all 4):
+#                             1. Feature importance (the relative_threshold
+#                                formula above) -- requires BOTH the data-
+#                                richness gate and the stability gate
+#                                (min_stability_score), since stability
+#                                specifically validates this criterion's own
+#                                RF/LightGBM importance signal.
+#                             2. Correlation + its own internal redundancy
+#                                check (same logic as correlation_redundancy
+#                                mode) -- requires ONLY the data-richness
+#                                gate. Pearson correlation isn't an RF/
+#                                LightGBM signal, so the stability gate
+#                                (built for criterion 1) doesn't apply to it.
+#                             3. Granger Causality, p < granger_pvalue_
+#                                threshold (driver's own past, at its chosen
+#                                lag, helps predict price beyond price's own
+#                                past) -- data-richness gate only, same
+#                                reasoning as criterion 2.
+#                             4. Johansen Cointegration, trace statistic >
+#                                the johansen_critical_value_column's critical
+#                                value -- data-richness gate only. Only run
+#                                at all when both price and the candidate are
+#                                non-stationary (ADF-tested internally) --
+#                                cointegration is a long-run-equilibrium
+#                                concept between two trending series, not a
+#                                bounded one; a stationary candidate simply
+#                                can't be selected via this criterion, which
+#                                is a legitimate "not applicable", not a
+#                                failure of the criterion.
+#                           No redundancy/multicollinearity elimination
+#                           happens ACROSS these 4 criteria: if 3 candidates
+#                           qualify via 3 different criteria and happen to
+#                           be >70% correlated with each other, all 3 are
+#                           kept here. The redundancy elimination inside
+#                           criterion 2 stays self-contained to that
+#                           criterion alone. See feature_selection.py's
+#                           _select_four_layer_or.
+#
+# An optional manual override layer (must_include_drivers/
+# force_exclude_drivers, per commodity in config/drivers/candidates/{id}.yaml)
+# sits on top of whichever selection_mode is active — populate those fields
+# on a candidate file to force a specific driver in or out regardless of
+# the statistical criteria; leave them empty (the default) for a purely
+# statistical selection. See feature_selection.py's _apply_beroe_overrides.
+#
+# After four_layer_or's own 4-criteria OR selection (which deliberately does
+# NOT eliminate redundancy across criteria — see above), one more pass runs
+# across the FINAL selected set: rank by |Pearson vs price| descending, keep
+# greedily, drop any driver whose correlation with an already-kept driver
+# exceeds redundancy_threshold (same 0.7 default, same algorithm as
+# criterion 2's own internal step, just applied across the whole selected
+# set instead of staying self-contained to that one criterion). See
+# feature_selection.py's _apply_final_redundancy_check.
+#
+# Switching modes, or changing any value below, never needs a code change.
+selection_mode: four_layer_or
+
+# top_n mode
+max_selected_drivers: 4
+
+# threshold mode
+min_contribution_pct: 15
+
+# relative_threshold mode (also four_layer_or's criterion 1)
+relative_threshold_multiplier: 1.2
+
+# correlation_redundancy mode (also four_layer_or's criterion 2)
+price_correlation_threshold: 0.4
+redundancy_threshold: 0.7
+
+# four_layer_or's criterion 3 (Granger Causality)
+granger_pvalue_threshold: 0.05
+
+# four_layer_or's criterion 4 (Johansen Cointegration) -- index into
+# statsmodels' coint_johansen critical-value table: 0 = 90%, 1 = 95%, 2 = 99%
+# confidence.
+johansen_critical_value_column: 1
+
+# Optional upper bound applied AFTER threshold/relative_threshold filtering,
+# in case many candidates clear the bar and you still want a ceiling. Set to
+# null to disable (no cap). Ignored in top_n mode (max_selected_drivers
+# already is the cap there), and in correlation_redundancy/four_layer_or
+# (which never impose an arbitrary count cap by design).
+max_selected_drivers_cap: null
+
+# RandomForestRegressor / LGBMRegressor hyperparameters used for both the
+# importance-ranking fits and the SHAP fit. Deliberately simple/default —
+# this is a ranking signal, not a forecasting model.
+n_estimators: 200

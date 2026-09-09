@@ -1,0 +1,55 @@
+# commodity_forecasting/requirements.txt
+#
+# Pinned to the exact versions this project is developed and tested
+# against — cross-checked package-by-package against every
+# `import`/`from` statement under src/.
+#
+# Install: pip install -r requirements.txt (inside a virtual environment).
+#
+# If you add another training machine, diff its `pip freeze` against this
+# file before trusting cross-machine result comparisons -- version drift
+# is a real source of result differences (optuna especially, since it
+# drives every hyperparameter search except ARIMAX/SARIMAX).
+
+# --- Core (config, data I/O) ---
+PyYAML==6.0.3
+pandas==2.3.3
+numpy==2.4.4
+openpyxl==3.1.5          # pandas' xlsx read/write engine -- every config/
+                          # driver/output file in this project is .xlsx or
+                          # .yaml, never .csv
+
+# --- Modeling: statistical + tree-based techniques ---
+statsmodels==0.14.6       # ARIMA, SARIMA, ETS, ARIMAX, SARIMAX, Markov-
+                          # Switching, VAR/VECM, GARCH's mean-model half,
+                          # eda.py's STL/ADF/KPSS/ACF-PACF
+pmdarima==2.1.1           # ARIMAX/SARIMAX order search (auto_arima)
+lightgbm==4.6.0           # LightGBM, LightGBM+ext, feature_selection.py's
+                          # importance ranking
+scikit-learn==1.8.0       # Random Forest, RF+ext, feature_selection.py's
+                          # importance ranking
+scipy==1.17.1             # eda.py's stationarity/statistical tests
+arch==8.0.0               # ARIMA+GARCH / SARIMA+GARCH's volatility half
+optuna==4.9.0             # hyperparameter search, every technique except
+                          # ARIMAX/SARIMAX (which use pmdarima instead)
+
+# --- Feature selection ---
+shap==0.52.0              # feature_selection.py's SHAP importance ranking
+
+# --- EDA / diagnostics ---
+matplotlib==3.10.9
+seaborn==0.13.2
+
+# --- Deep learning: TST, TFT (currently disabled, see technique_matrix.yaml) ---
+# The modules themselves live under modeling/archive/models_deep_learning_
+# disabled/, not src/models/ -- move them back to re-enable. src/pipeline/
+# run_horizon.py already handles either case (TST/TFT import lazily and are
+# skipped, not crashed, when torch/pytorch-lightning aren't installed).
+# On Windows, installing these into a venv under a long path can fail with
+# WinError 206 (filename/extension too long) without LongPathsEnabled --
+# use a short-path venv if that happens.
+# torch==2.13.0
+# pytorch-lightning==2.6.5
+
+# --- Testing ---
+pytest==9.0.3
