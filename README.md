@@ -298,11 +298,11 @@ result = run_horizon(
 ```
 (`run_batch()` takes the same four, plus threads them through its
 `parallel=True` path too.) This exists because a `fast=True` verification
-run that redirected only `output_root` genuinely leaked 3 real pickles into
-`saved_models/copper/short/` and overwrote a real `technique_selection_
-history.xlsx` row with fast=True's unreliable (few-trial) ranking — caught
-and corrected after the fact, which is what prompted adding
-`saved_models_root` as its own parameter.
+run that redirected only `output_root` genuinely leaked real pickles into
+`saved_models/` and overwrote a real `technique_selection_history.xlsx`
+row with fast=True's unreliable (few-trial) ranking — caught and corrected
+after the fact, which is what prompted adding `saved_models_root` as its
+own parameter.
 
 ### Checking which drivers got selected (without waiting for training)
 `run_batch()`'s own sequence runs driver selection for **every** commodity
@@ -407,9 +407,8 @@ differs. Loading and forecasting from one of these is
 would call "recommendable."** Model saving is ranked by composite score
 alone; it does not check `eligible_for_recommendation` (85% MAPE accuracy /
 55% Directional Accuracy — see "What the eligibility threshold actually
-does" right below). A horizon where every technique misses that bar (e.g.
-copper's Long Term today — best MAPE accuracy was 82.3%, just under 85%)
-still gets its top-3 by score saved here, even though `outputs/{id}/{horizon}/final_*`
+does" right below). A horizon where every technique misses that bar still
+gets its top-3 by score saved here, even though `outputs/{id}/{horizon}/final_*`
 doesn't get written for that horizon at all (no eligible technique to
 recommend). The only techniques never saved are ones `disqualified` (hard
 fail) or with too little evaluated history to have a real score.
@@ -422,8 +421,8 @@ output — `outputs/{id}/{horizon}/final_forecast_file.xlsx` /
 `final_summary_file.xlsx` and the auto-default written to the Decision Log.
 It's a quality floor, deliberately separate from the (relative) Composite
 Score / Rank ranking and from Beroe's own Benchmark row — a technique can
-out-rank Benchmark and still miss this absolute bar (as VAR does for copper
-Long Term above), and it doesn't need to beat Benchmark to pass it either.
+out-rank Benchmark and still miss this absolute bar, and it doesn't need to
+beat Benchmark to pass it either.
 Nothing below this bar gets a `final_*` file or becomes a Decision Log
 default, no matter how it ranks against the other techniques. It's
 independent of, and stricter than, the harder `disqualification_criteria`
