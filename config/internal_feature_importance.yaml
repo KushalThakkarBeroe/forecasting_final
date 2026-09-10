@@ -22,4 +22,4 @@
 # Beroe manual review) and should never be at risk of losing a popularity
 # contest against internal features.
 enabled: true
-cumulative_importance_threshold_pct: 80
+cumulative_importance_threshold_pct: 70

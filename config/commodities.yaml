@@ -427,8 +427,8 @@ commodities:
   start_period: 2018-01
   data:
     file: data/external/steel_scrap/steel_scrap_ext_var.xlsx
-  drivers_status: candidates
-  drivers_config: config/drivers/candidates/steel_scrap.yaml
+  drivers_status: selected
+  drivers_config: config/drivers/selected/steel_scrap.yaml
 - id: wheat
   display_name: Wheat
   grade: HRW Wheat
