@@ -30,10 +30,17 @@ merged into one check:
     still fall in the 75-85% MAPE-accuracy gap band — scored, but not
     eligible for the recommendation step to actually pick.
 
-Two config values used below (forecast_dynamism.dynamism_reference_pct,
-recency_bonus.recency_bonus_multiplier) and the outlier-cap penalty's bounds
-are inferred defaults, not settled values — see the comments in
-config/scoring.yaml immediately above each one.
+One config value used below (recency_bonus.recency_bonus_multiplier) and
+the outlier-cap penalty's bounds are inferred defaults, not settled values
+— see the comments in config/scoring.yaml immediately above each one.
+
+Forecast Dynamism is a "Dynamism Match" score: 100 * (1 - |CV_pred -
+CV_actual| / CV_actual) per window, CV = coefficient of variation
+(std/mean) — rewards a forecast whose own relative volatility resembles
+the real price's relative volatility over that same window, not just
+"does the forecast move at all" (the superseded formula's own basis,
+which only ever rewarded more movement up to a reference level and could
+never penalize an overly erratic forecast). See _dynamism_inputs.
 """
 
 from __future__ import annotations
@@ -69,7 +76,7 @@ def _load_technique_eligibility(technique_key: str) -> dict:
 class ComponentScores:
     accuracy_score: float               # 0-100, row-level mean(100 - MAPE) since backtest_start_date -- see module docstring
     directional_accuracy_score: float   # 0-100, horizon-appropriate DA mean over lookback cycles
-    dynamism_score: float               # 0-100, normalized forecast StdDev scaled to dynamism_reference_pct
+    dynamism_score: float               # 0-100, "Dynamism Match" -- how closely CV(Predicted) matches CV(Actual) per window (see _dynamism_inputs)
     recency_score: float                # 0-100, recency-weighted variant of accuracy_score
 
 
@@ -127,24 +134,69 @@ def _clip_0_100(values: "pd.Series | np.ndarray") -> np.ndarray:
     return np.clip(np.asarray(values, dtype=float), 0.0, 100.0)
 
 
-def _dynamism_inputs(detail_df: pd.DataFrame, windows: "list[int]") -> "tuple[float, list[float]]":
+def _dynamism_inputs(detail_df: pd.DataFrame, windows: "list[int]") -> "tuple[float, list[float], float]":
     """
-    Returns (mean normalized-StdDev-%, per-window normalized-StdDev-% list)
-    across the given Window numbers, using EVERY recorded Predicted value in
-    each window (not just rows with an Actual yet) -- Dynamism measures the
-    shape of the forecast curve itself, not forecast accuracy.
+    Returns (mean Dynamism Match score 0-100, per-window Dynamism Match
+    score list, mean raw Predicted-CV %) across the given Window numbers.
+
+    Dynamism Match = 100 * (1 - |CV_pred - CV_actual| / CV_actual), clipped
+    to [0, 100] -- CV (coefficient of variation) = std/mean, computed
+    separately for a window's Predicted values and its (realized) Actual
+    values. This measures whether the forecast's own relative volatility
+    resembles the REAL price's relative volatility over that same window --
+    both a too-flat AND a too-erratic forecast score low, not just a flat
+    one. (Superseded formula: raw CV of Predicted alone, scaled to 100 at
+    config/scoring.yaml's forecast_dynamism.dynamism_reference_pct -- that
+    field is no longer read; this formula's output is already 0-100 on its
+    own, needing no reference level to scale against.)
+
+    A window contributes nothing to the match score (skipped, not scored 0)
+    when either side can't be meaningfully computed: fewer than 2 Predicted
+    rows, fewer than 2 rows with a real Actual yet (a window covering the
+    very recent past or the future can have predictions with no realized
+    outcome to compare against), a zero/NaN mean on either side (CV
+    undefined), or CV_actual == 0 (a perfectly flat actual price over that
+    window -- the match formula divides by this, and a flat real price
+    isn't a meaningful volatility target to match against anyway).
+
+    The third return value (mean raw Predicted-CV %) is separate from the
+    match score and NOT gated on Actual availability -- it's what the
+    Long-Term flat-line penalty uses (config/scoring.yaml's penalty_flags.
+    flat_stddev_threshold_pct), which needs to catch a suspiciously flat
+    forecast even in a window with no realized outcome yet to compare
+    against, same as it always has.
     """
-    per_window_pct = []
+    per_window_scores = []
+    per_window_pred_cv_pct = []
     for w in windows:
-        preds = detail_df.loc[detail_df["Window"] == w, "Predicted"]
-        if len(preds) < 2:
+        window_df = detail_df.loc[detail_df["Window"] == w]
+        preds = window_df["Predicted"]
+
+        if len(preds) >= 2:
+            mean_pred = preds.mean()
+            if mean_pred != 0 and not pd.isna(mean_pred):
+                cv_pred = preds.std() / abs(mean_pred)
+                per_window_pred_cv_pct.append(float(cv_pred * 100))
+            else:
+                cv_pred = None
+        else:
+            cv_pred = None
+
+        actuals = window_df["Actual"].dropna()
+        if cv_pred is None or len(actuals) < 2:
             continue
-        mean_pred = preds.mean()
-        if mean_pred == 0 or pd.isna(mean_pred):
+        mean_actual = actuals.mean()
+        if mean_actual == 0 or pd.isna(mean_actual):
             continue
-        per_window_pct.append(float(preds.std() / abs(mean_pred) * 100))
-    mean_pct = float(np.mean(per_window_pct)) if per_window_pct else float("nan")
-    return mean_pct, per_window_pct
+        cv_actual = actuals.std() / abs(mean_actual)
+        if cv_actual == 0:
+            continue
+        match_score = 100 * (1 - abs(cv_pred - cv_actual) / cv_actual)
+        per_window_scores.append(float(np.clip(match_score, 0.0, 100.0)))
+
+    mean_score = float(np.mean(per_window_scores)) if per_window_scores else float("nan")
+    mean_pred_cv_pct = float(np.mean(per_window_pred_cv_pct)) if per_window_pred_cv_pct else float("nan")
+    return mean_score, per_window_scores, mean_pred_cv_pct
 
 
 def score_technique_result(
@@ -220,10 +272,12 @@ def score_technique_result(
     da_col = "Abs Directional Accuracy (%)" if da_method == "fixed_anchor" else "Directional Accuracy (%)"
     da_score = float(np.mean(_clip_0_100(cycles[da_col].to_numpy())))
 
-    # --- Forecast Dynamism (15%) ---
-    dynamism_ref_pct = cfg["forecast_dynamism"]["dynamism_reference_pct"]
-    mean_stddev_pct, _per_window_stddev_pct = _dynamism_inputs(result.detail_df, cycles["Window"].tolist())
-    dynamism_score = float(np.clip(mean_stddev_pct / dynamism_ref_pct * 100, 0.0, 100.0)) if not np.isnan(mean_stddev_pct) else 0.0
+    # --- Forecast Dynamism (15%): "Dynamism Match" -- see _dynamism_inputs'
+    # own docstring. Already 0-100 (a CV_pred-vs-CV_actual match score), no
+    # reference level to scale against -- forecast_dynamism.dynamism_
+    # reference_pct in config/scoring.yaml is no longer read.
+    mean_dynamism_score, _per_window_dynamism_scores, mean_pred_cv_pct = _dynamism_inputs(result.detail_df, cycles["Window"].tolist())
+    dynamism_score = mean_dynamism_score if not np.isnan(mean_dynamism_score) else 0.0
 
     # --- Recency Bonus (10%): accuracy_per_cycle re-averaged with the most
     # recent `recency_bonus_cycle_count` cycles up-weighted ---
@@ -250,7 +304,7 @@ def score_technique_result(
     # --- Penalties ---
     penalty_cfg = cfg["penalty_flags"]
     flat_line_penalty = 0.0
-    if horizon_bucket == "long" and not np.isnan(mean_stddev_pct) and mean_stddev_pct < penalty_cfg["flat_stddev_threshold_pct"]:
+    if horizon_bucket == "long" and not np.isnan(mean_pred_cv_pct) and mean_pred_cv_pct < penalty_cfg["flat_stddev_threshold_pct"]:
         flat_line_penalty = float(penalty_cfg["flat_line_lt_penalty_points"])
 
     price_min, price_max = float(price_series.min()), float(price_series.max())

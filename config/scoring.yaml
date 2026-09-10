@@ -54,15 +54,19 @@ penalty_flags:
   outlier_min_multiplier: 0.3
   outlier_max_multiplier: 3.0
 
-# Forecast Dynamism: standard deviation of the forecasted steps, penalizing
-# flat-line forecasts (especially at Long Term). dynamism_reference_pct is
-# an inferred default, not a settled value — flagged for confirmation
-# before relying on absolute Dynamism scores across commodities of very
-# different volatility. Forecast StdDev is normalized as a % of the
-# forecast's own mean (comparable across commodities/price levels), then
-# scaled linearly to 100 at this reference level and capped there.
+# Forecast Dynamism ("Dynamism Match"): 100 * (1 - |CV_pred - CV_actual| /
+# CV_actual) per backtest window, CV = coefficient of variation (std/mean).
+# Rewards a forecast whose own relative volatility resembles the real
+# price's relative volatility over that same window -- both a too-flat AND
+# a too-erratic forecast score low. See src/scoring/composite_score.py's
+# _dynamism_inputs.
+#
+# dynamism_reference_pct: NO LONGER READ by composite_score.py -- kept
+# here only as a record of the superseded formula's own spec (raw CV of
+# the forecast alone, scaled linearly to 100 at this reference level and
+# capped there, penalizing only flat-lining, never excess movement).
 forecast_dynamism:
-  dynamism_reference_pct: 8   # normalized forecast StdDev (%) that earns a full 100 Dynamism score
+  dynamism_reference_pct: 8   # superseded -- see comment above
 
 # Recency Bonus: extra weight given to the most recent evaluation cycles vs
 # older ones — the most recent recency_bonus_cycle_count cycles are
