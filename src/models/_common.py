@@ -20,7 +20,9 @@ import numpy as np
 import optuna
 import pandas as pd
 import yaml
+from lightgbm import LGBMRegressor
 from optuna.samplers import TPESampler
+from sklearn.ensemble import RandomForestRegressor
 
 from config_loader import CONFIG_DIR, CommodityConfig
 
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 MULTICOLLINEARITY_YAML = CONFIG_DIR / "multicollinearity.yaml"
+INTERNAL_FEATURE_IMPORTANCE_YAML = CONFIG_DIR / "internal_feature_importance.yaml"
+FEATURE_SELECTION_YAML = CONFIG_DIR / "feature_selection.yaml"
 
 
 def _load_yaml(path) -> dict:
@@ -80,6 +84,76 @@ def drop_multicollinear_features(
 
     kept_set = set(kept) | set(ext_var_cols)
     return [c for c in feature_cols if c in kept_set]
+
+
+def _normalize_importance(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=float)
+    total = arr.sum()
+    return arr / total if total > 0 else arr
+
+
+def select_important_internal_features(
+    feature_df: pd.DataFrame, feature_cols: list[str], price_col: str, ext_var_cols: "list[str] | None" = None,
+) -> list[str]:
+    """
+    Second stage after drop_multicollinear_features -- see config/
+    internal_feature_importance.yaml's own comments for the full picture.
+    Ranks the surviving internal engineered features by combined RF+
+    LightGBM importance (averaged across feature_selection.yaml's
+    n_stability_runs refits, the same methodology feature_selection.py
+    already uses for external driver selection), then keeps the fewest,
+    highest-ranked features whose cumulative share of total importance
+    reaches cumulative_importance_threshold_pct. Returns feature_cols
+    unchanged (in its original order) if the check is disabled in config,
+    with driver columns always included and always in their original
+    relative position -- same contract as drop_multicollinear_features.
+
+    ext_var_cols are excluded from this ranking entirely and always kept,
+    same protection drop_multicollinear_features already gives them.
+    """
+    ext_var_cols = ext_var_cols or []
+    internal_cols = [c for c in feature_cols if c not in ext_var_cols]
+
+    cfg = _load_yaml(INTERNAL_FEATURE_IMPORTANCE_YAML)
+    if not cfg.get("enabled", True) or not internal_cols:
+        return feature_cols
+    threshold = cfg["cumulative_importance_threshold_pct"] / 100
+
+    fs_cfg = _load_yaml(FEATURE_SELECTION_YAML)
+    n_stability_runs = fs_cfg["n_stability_runs"]
+    n_estimators = fs_cfg["n_estimators"]
+
+    model_df = feature_df[[price_col] + internal_cols].dropna()
+    if model_df.empty:
+        return feature_cols
+    X, y = model_df[internal_cols], model_df[price_col]
+
+    rf_importances, lgbm_importances = [], []
+    for seed in range(n_stability_runs):
+        rf = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=1)
+        rf.fit(X, y)
+        rf_importances.append(rf.feature_importances_)
+
+        lgbm = LGBMRegressor(n_estimators=n_estimators, random_state=seed, verbosity=-1, n_jobs=1)
+        lgbm.fit(X, y)
+        lgbm_importances.append(lgbm.feature_importances_)
+
+    rf_norm = _normalize_importance(np.mean(rf_importances, axis=0))
+    lgbm_norm = _normalize_importance(np.mean(lgbm_importances, axis=0))
+    combined = (rf_norm + lgbm_norm) / 2
+
+    ranked = sorted(zip(internal_cols, combined), key=lambda pair: pair[1], reverse=True)
+    kept: list[str] = []
+    cumulative = 0.0
+    for col, score in ranked:
+        kept.append(col)
+        cumulative += score
+        if cumulative >= threshold:
+            break
+
+    kept_set = set(kept) | set(ext_var_cols)
+    return [c for c in feature_cols if c in kept_set]
+
 
 PERIODS_PER_YEAR = {"monthly": 12, "quarterly": 4}
 
@@ -998,6 +1072,7 @@ def search_best_params_direct_horizon(
     """
     feature_cols = [c for c in feature_df.columns if c not in (date_col, target_col)]
     feature_cols = drop_multicollinear_features(feature_df, feature_cols, target_col, ext_var_cols=ext_var_cols)
+    feature_cols = select_important_internal_features(feature_df, feature_cols, target_col, ext_var_cols=ext_var_cols)
     df_clean = feature_df.dropna(subset=feature_cols).reset_index(drop=True)
     for h in all_horizons:
         df_clean[f"target_h{h}"] = df_clean[target_col].shift(-h)
@@ -1129,6 +1204,7 @@ def run_direct_horizon_backtest(
     periods_per_year = PERIODS_PER_YEAR[commodity.frequency]
     feature_cols = [c for c in feature_df.columns if c not in (date_col, target_col)]
     feature_cols = drop_multicollinear_features(feature_df, feature_cols, target_col, ext_var_cols=ext_var_cols)
+    feature_cols = select_important_internal_features(feature_df, feature_cols, target_col, ext_var_cols=ext_var_cols)
     df_clean = feature_df.dropna(subset=feature_cols).reset_index(drop=True)
 
     m_start, m_end = horizon_periods

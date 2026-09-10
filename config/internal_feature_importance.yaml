@@ -1,0 +1,25 @@
+# Second-stage selection of internal engineered features, applied AFTER
+# config/multicollinearity.yaml's redundancy filter, right before RF/
+# LightGBM/RF+ext/LightGBM+ext ever see the feature set.
+#
+# Ranks the post-multicollinearity survivors by combined RF+LightGBM
+# importance (averaged across config/feature_selection.yaml's own
+# n_stability_runs refits -- not duplicated here, same n_stability_runs/
+# n_estimators values that file already uses for external driver
+# selection, so there's one source of truth for the refit count), then
+# keeps the fewest, highest-ranked features whose CUMULATIVE share of
+# total importance reaches cumulative_importance_threshold_pct below.
+# Self-adjusting per commodity -- there is deliberately no fixed feature
+# count anywhere in this file; a commodity whose importance is spread
+# evenly needs more features to reach the threshold, one dominated by a
+# single strong feature needs fewer.
+#
+# External drivers are never part of this ranking and are always kept
+# regardless of where they'd land in it -- same protection
+# drop_multicollinear_features already gives them (see that function's own
+# docstring in src/models/_common.py): they already passed their own,
+# harder selection process (feature_selection.py's 4-layer-OR criteria +
+# Beroe manual review) and should never be at risk of losing a popularity
+# contest against internal features.
+enabled: true
+cumulative_importance_threshold_pct: 80

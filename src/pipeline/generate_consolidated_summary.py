@@ -40,7 +40,7 @@ from config_loader import PROJECT_ROOT, load_commodities, load_commodity  # noqa
 from external_driver_loader import load_external_drivers  # noqa: E402
 from internal_features import DATE_COLUMN_NAME, build_internal_features  # noqa: E402
 from external_feature_merge import assemble_features  # noqa: E402
-from _common import drop_multicollinear_features  # noqa: E402
+from _common import drop_multicollinear_features, select_important_internal_features  # noqa: E402
 from recommend import build_summary_df  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -73,20 +73,24 @@ def _load_region_lookup() -> dict[str, "str | None"]:
 
 def _multicollinearity_kept_features(cid: str) -> dict:
     """Which of internal_features.py's engineered columns actually survive
-    _common.py's multicollinearity filter (config/multicollinearity.yaml) --
-    the same check rf.py/lgbm.py/rf_ext.py/lgbm_ext.py apply before a model
-    ever sees these columns, replayed here purely for reporting. Computed
-    TWICE, deliberately kept separate rather than reconciled into one
-    answer, because the two paths can genuinely disagree:
-      - "univariate": drop_multicollinear_features run on internal features
-        alone (internal_feat, price_col) -- what rf.py/lgbm.py actually use.
-      - "ext_aware": run on internal features + selected drivers merged
-        (assemble_features' output) -- what rf_ext.py/lgbm_ext.py actually
-        use. Selected drivers themselves are never dropped here (ext_var_cols
-        is passed through), but the row set correlations are computed over
-        differs (assemble_features' own dropna), so which internal features
-        survive can differ from the univariate case even though the same
-        threshold and formulas are used.
+    BOTH filtering stages _common.py applies before a model ever sees these
+    columns -- Item 1's multicollinearity filter (config/multicollinearity.
+    yaml), then Item [cumulative-importance] filter (config/
+    internal_feature_importance.yaml) -- replayed here purely for
+    reporting, same two calls rf.py/lgbm.py/rf_ext.py/lgbm_ext.py/
+    model_persistence.py actually make. Computed TWICE, deliberately kept
+    separate rather than reconciled into one answer, because the two paths
+    can genuinely disagree:
+      - "univariate": both filters run on internal features alone
+        (internal_feat, price_col) -- what rf.py/lgbm.py actually use.
+      - "ext_aware": both filters run on internal features + selected
+        drivers merged (assemble_features' output) -- what rf_ext.py/
+        lgbm_ext.py actually use. Selected drivers themselves are never
+        dropped or ranked by either filter (ext_var_cols is passed
+        through both), but the row set correlations/importances are
+        computed over differs (assemble_features' own dropna), so which
+        internal features survive can differ from the univariate case
+        even though the same thresholds and formulas are used.
     A commodity with no selected drivers naturally gets identical results
     in both, since assemble_features falls back to internal_features_df
     unchanged when there's nothing to merge -- not a bug, just means there
@@ -103,16 +107,18 @@ def _multicollinearity_kept_features(cid: str) -> dict:
 
         internal_cols = [c for c in internal_feat.columns if c not in (DATE_COLUMN_NAME, price_col)]
         univariate_kept = drop_multicollinear_features(internal_feat, internal_cols, price_col)
+        univariate_kept = select_important_internal_features(internal_feat, univariate_kept, price_col)
 
         assembly = assemble_features(commodity, internal_feat, external_driver_data)
         ext_var_cols = [d.label for d in assembly.decisions if d.action in ("included", "imputed")]
         ext_feature_cols = [c for c in assembly.df.columns if c not in (DATE_COLUMN_NAME, price_col)]
         ext_kept = drop_multicollinear_features(assembly.df, ext_feature_cols, price_col, ext_var_cols=ext_var_cols)
+        ext_kept = select_important_internal_features(assembly.df, ext_kept, price_col, ext_var_cols=ext_var_cols)
         ext_kept_internal = [c for c in ext_kept if c not in ext_var_cols]
 
         return {"total": len(internal_cols), "univariate_kept": univariate_kept, "ext_kept": ext_kept_internal}
     except Exception:
-        logger.warning("%s: could not recompute multicollinearity-kept features for the Driver Selection sheet", cid, exc_info=True)
+        logger.warning("%s: could not recompute kept internal features for the Driver Selection sheet", cid, exc_info=True)
         return {"total": 0, "univariate_kept": [], "ext_kept": []}
 
 
@@ -128,12 +134,13 @@ def build_driver_selection_sheet(commodity_ids: "list[str]") -> pd.DataFrame:
     Region sits right after Commodity, matching the Data - All Horizons and
     Scoring Detail sheets -- same region_lookup those two use.
 
-    The last five columns report Item 1's multicollinearity filter (see
+    The last five columns report both internal-feature filtering stages
+    (multicollinearity, then cumulative-importance -- see
     _multicollinearity_kept_features) -- Total Internal Features is the
     same ~63-column count for every monthly commodity (fewer for
     quarterly, since the 12 is_month flags are monthly-only) before any
     filtering; the Univariate/Ext-Aware pairs show what's actually left
-    after it, side by side since the two can genuinely differ."""
+    after BOTH stages, side by side since the two can genuinely differ."""
     region_lookup = _load_region_lookup()
     rows = []
     for cid in sorted(commodity_ids):

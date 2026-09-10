@@ -140,7 +140,7 @@ commodity **per horizon** (short/medium/long).
 | SARIMAX | `sarimax.py` | SARIMA with drivers as exogenous inputs. |
 | VAR | `var_vecm.py` (`run_var`) | Models price and drivers jointly. Always runs if drivers exist. |
 | VECM | `var_vecm.py` (`run_vecm`) | Like VAR, but only runs when price and drivers are statistically confirmed to move together long-term (a cointegration test). If they aren't, no VECM row is produced for that commodity. |
-| `_common.py` | *(not a technique)* | The shared backtesting engine every technique above calls into — this is what actually builds the sliding backtest windows, computes accuracy/directional-accuracy metrics, and assembles each technique's output into one consistent shape. Also runs a **multicollinearity check** (`config/multicollinearity.yaml`, same pairwise-correlation method and 0.7 default threshold as the driver-redundancy check) on the 63 internal engineered features before they reach RF/LightGBM/RF+ext/LightGBM+ext — never applied to selected drivers themselves, only to the engineered feature set. |
+| `_common.py` | *(not a technique)* | The shared backtesting engine every technique above calls into — this is what actually builds the sliding backtest windows, computes accuracy/directional-accuracy metrics, and assembles each technique's output into one consistent shape. Also runs the internal-feature reduction pipeline before RF/LightGBM/RF+ext/LightGBM+ext ever see a feature: **(1) multicollinearity check** (`config/multicollinearity.yaml`, pairwise-correlation, 0.7 default threshold) on the 63 internal engineered features, then **(2) cumulative-importance check** (`config/internal_feature_importance.yaml`) on whatever survives that — ranks the remaining features by combined RF+LightGBM importance and keeps only the fewest, highest-ranked ones whose cumulative share reaches a configurable threshold (80% by default). Neither step is ever applied to selected drivers themselves — only to the engineered internal feature set. |
 | `driver_projection.py` | *(not a technique)* | Forecasts each driver's **own** future value (needed so ARIMAX/SARIMAX/etc. have something to condition on beyond the historical data). |
 
 TST and TFT (deep-learning techniques) exist as code but are **disabled** in this
@@ -167,7 +167,7 @@ deployment — see Section 7.
 | `run_horizon.py` | Runs every step (feature engineering → modeling → scoring → output files) for **one commodity, one horizon**. |
 | `run_batch.py` | The actual entry point. Loops every commodity × every horizon. One commodity's failure never stops the rest. Has an optional `parallel=True` mode to run multiple commodity/horizon combinations at once. |
 | `generate_outputs.py` | Writes the actual `.xlsx` files (review + final) for one commodity/horizon. Every `final_*` write also drops a never-overwritten timestamped copy into that folder's `history/` subdirectory — see "Comparing runs over time" in Section 5. |
-| `generate_consolidated_summary.py` | Builds the cross-commodity rollup (`outputs/consolidated_summary.xlsx`) after a batch finishes. Its Driver Selection sheet's last 5 columns report Item 1's multicollinearity filter — **"Total Internal Features"** (the ~63-column count before filtering) and, side by side, **"Internal Features Kept (Univariate/Ext-Aware) Count/Names"** — see "What's in the Driver Selection sheet" in Section 5. |
+| `generate_consolidated_summary.py` | Builds the cross-commodity rollup (`outputs/consolidated_summary.xlsx`) after a batch finishes. Its Driver Selection sheet's last 5 columns report what survives BOTH internal-feature filtering stages (multicollinearity, then cumulative-importance) — **"Total Internal Features"** (the ~63-column count before filtering) and, side by side, **"Internal Features Kept (Univariate/Ext-Aware) Count/Names"** — see "What's in the Driver Selection sheet" in Section 5. |
 
 ### `src/scripts/`
 
@@ -175,7 +175,7 @@ deployment — see Section 7.
 |---|---|
 | `scaffold_config.py` | Scans `data/external/` for commodity Excel files and updates `config/commodities.yaml` + `config/drivers/candidates/{id}.yaml`. This is the **only** way new commodities get added to the registry — see Section 8. |
 | `predict_from_saved_model.py` | Loads one of `model_persistence.py`'s saved rank-1/2/3 pickles and forecasts forward from it — no re-fitting, re-searching, or touching the backtest engine. See "Predicting from a saved model" in Section 5. |
-| `generate_consolidated_predictions.py` | One workbook across many commodities × many horizons × all 3 saved ranks each, reusing `predict_from_saved_model.py`'s own forecasting dispatch rather than duplicating it. See "Generating a consolidated predictions workbook" in Section 5. |
+| `generate_consolidated_predictions.py` | One workbook across many commodities × many horizons × ranks (defaults to all 3 saved ranks, narrowable via `--ranks`), reusing `predict_from_saved_model.py`'s own forecasting dispatch rather than duplicating it. See "Generating a consolidated predictions workbook" in Section 5. |
 
 ---
 
@@ -202,6 +202,7 @@ code edits needed.
 | How far ahead drivers get projected | `driver_projection.yaml` | `max_horizon_months` |
 | Force a specific driver in/out for one commodity | `config/drivers/candidates/{id}.yaml` | `must_include_drivers`, `force_exclude_drivers` |
 | Multicollinearity filtering of internal engineered features (RF/LightGBM/RF+ext/LightGBM+ext) | `multicollinearity.yaml` | `enabled`, `correlation_threshold` |
+| How aggressively internal engineered features get cut down by importance (RF/LightGBM/RF+ext/LightGBM+ext), after multicollinearity | `internal_feature_importance.yaml` | `enabled`, `cumulative_importance_threshold_pct` |
 
 **Do not hand-edit** `config/commodities.yaml`'s auto-generated fields
 (`display_name`, `grade`, `region`, `frequency`, `start_period`, `data.file`) — they
@@ -346,22 +347,37 @@ commodity, has two distinct halves:
   candidate driver list and whichever ones `feature_selection.py` actually
   picked, read straight from `config/drivers/candidates/{id}.yaml` and
   `selected/{id}.yaml`.
-- **Internal engineered features surviving Item 1's multicollinearity
-  filter** (the last 5 columns) — `Total Internal Features` is the count
-  before filtering (63 for a monthly commodity, fewer for quarterly, since
-  the 12 `is_month` flags are monthly-only); `Internal Features Kept
-  (Univariate) Count/Names` is what `rf.py`/`lgbm.py` actually train on;
-  `Internal Features Kept (Ext-Aware) Count/Names` is the same filter
-  re-run on internal features + selected drivers merged (what
+- **Internal engineered features surviving BOTH filtering stages** (the
+  last 5 columns) — `Total Internal Features` is the count before any
+  filtering (63 for a monthly commodity, fewer for quarterly, since the 12
+  `is_month` flags are monthly-only); `Internal Features Kept (Univariate)
+  Count/Names` is what `rf.py`/`lgbm.py` actually train on after both the
+  multicollinearity filter AND the cumulative-importance filter (config/
+  internal_feature_importance.yaml — ranks survivors by combined RF+
+  LightGBM importance, keeps the fewest, highest-ranked ones whose
+  cumulative share reaches a configurable threshold, 80% by default);
+  `Internal Features Kept (Ext-Aware) Count/Names` is the same two-stage
+  pipeline re-run on internal features + selected drivers merged (what
   `rf_ext.py`/`lgbm_ext.py` actually train on) — reported side by side
   rather than reconciled into one answer, because the two genuinely can
   differ (different row set after the driver merge's own dropna, so the
-  same pairwise-correlation math can land on a different surviving set). A
-  commodity with no selected drivers gets identical values in both, since
-  there's nothing for the ext-aware path to differ on. Both are recomputed
-  fresh every time this sheet is built (same non-blocking, best-effort
-  pattern as everything else in this function) — see
-  `_multicollinearity_kept_features` in `generate_consolidated_summary.py`.
+  same correlation/importance math can land on a different surviving
+  set). Selected drivers are never part of either filtering stage —
+  always kept regardless of where they'd rank. A commodity with no
+  selected drivers gets identical values in both, since there's nothing
+  for the ext-aware path to differ on. Both are recomputed fresh every
+  time this sheet is built (same non-blocking, best-effort pattern as
+  everything else in this function) — see `_multicollinearity_kept_
+  features` in `generate_consolidated_summary.py`.
+
+Concretely, for copper: 63 total → 30 after multicollinearity → **7** after
+the cumulative-importance filter at its 80% default (`lag_1`,
+`price_to_rolling_mean_36`, `rolling_mean_36`, `expanding_mean`,
+`mom_change`, `coef_var_6`, `roll_std_12`) — those 7 alone already account
+for 80%+ of the combined importance signal; the other 23 contribute a
+fraction of a percent each (mostly the individual `is_month` calendar
+dummies, which `month_sin`/`quarter_cos`/`seasonal_index` already capture
+more efficiently as cyclical features).
 
 ### Comparing runs over time
 `final_forecast_file.xlsx`/`final_summary_file.xlsx` at their normal path
@@ -503,23 +519,28 @@ before this loop can predict from it.
 python src/scripts/generate_consolidated_predictions.py --commodities copper,wheat --horizons short,medium
 python src/scripts/generate_consolidated_predictions.py --all --horizons short,medium,long
 python src/scripts/generate_consolidated_predictions.py --all
+python src/scripts/generate_consolidated_predictions.py --commodities copper --horizons short --ranks 1
 ```
 The third form is the same as the second — `--horizons` defaults to
 `short,medium,long` when omitted, so `--all` on its own already means
-every commodity with a saved model, across every horizon.
+every commodity with a saved model, across every horizon. The fourth form
+narrows to just rank 1 instead of the default all 3 — see below.
 
 or programmatically:
 ```python
 from generate_consolidated_predictions import generate_consolidated_predictions
 xlsx_path = generate_consolidated_predictions(["copper", "wheat"], ["short", "medium"])
+xlsx_path = generate_consolidated_predictions(["copper"], ["short"], ranks=[1])
 ```
-One workbook, many commodities × many horizons × **always all 3 saved
-ranks** (no partial option — the point is the client sees the top pick and
-both alternates side by side, never a single number with no way to judge
-how much the techniques agree). `--commodities` omitted (or `--all`) means
-every commodity that actually **has** at least one saved model — discovered
-by scanning `saved_models/`'s own subfolders, not every commodity in
-`commodities.yaml` (most of which have never been trained at all).
+One workbook, many commodities × many horizons × ranks — **defaults to all
+3 saved ranks**, so the client sees the top pick and both alternates side
+by side rather than a single number with no way to judge how much the
+techniques agree, but `--ranks` (CLI) / `ranks=` (programmatic) can narrow
+that to specific rank(s), e.g. `--ranks 1` for just the top pick.
+`--commodities` omitted (or `--all`) means every commodity that actually
+**has** at least one saved model — discovered by scanning `saved_models/`'s
+own subfolders, not every commodity in `commodities.yaml` (most of which
+have never been trained at all).
 
 Reuses `predict_from_saved_model.py`'s exact per-technique forecasting
 dispatch (`_forecast_from_bundle`) — no forecasting logic is duplicated

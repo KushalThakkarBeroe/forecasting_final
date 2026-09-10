@@ -1,19 +1,21 @@
 """
 One consolidated workbook of forward forecasts across many commodities,
-many horizons, and ALL 3 saved ranks per commodity x horizon -- the
-multi-commodity companion to predict_from_saved_model.py's single-call CLI.
-Reuses that module's exact per-technique forecasting dispatch
-(_forecast_from_bundle) rather than duplicating any forecasting logic; this
-file is pure orchestration (which commodities, which horizons, which
-pickles) plus the workbook layout.
+many horizons, and (by default) all 3 saved ranks per commodity x horizon
+-- the multi-commodity companion to predict_from_saved_model.py's
+single-call CLI. Reuses that module's exact per-technique forecasting
+dispatch (_forecast_from_bundle) rather than duplicating any forecasting
+logic; this file is pure orchestration (which commodities, which horizons,
+which ranks, which pickles) plus the workbook layout.
 
 Usage (CLI):
   python src/scripts/generate_consolidated_predictions.py --commodities copper,wheat --horizons short,medium
   python src/scripts/generate_consolidated_predictions.py --all --horizons short,medium,long
+  python src/scripts/generate_consolidated_predictions.py --commodities copper --horizons short --ranks 1
 
 Or programmatically:
   from generate_consolidated_predictions import generate_consolidated_predictions
   xlsx_path = generate_consolidated_predictions(["copper", "wheat"], ["short", "medium"])
+  xlsx_path = generate_consolidated_predictions(["copper"], ["short"], ranks=[1])
 
 --commodities omitted (or --all) means every commodity that actually HAS at
 least one saved model on disk (discovered from saved_models/'s own
@@ -22,15 +24,16 @@ never been trained at all.
 
 Per (commodity, horizon) pair, forecasts out to that horizon's own upper
 bound from config/horizon_defaults.yaml (short=3, medium=6, long=18 for a
-monthly commodity) via ALL 3 saved ranks -- always all 3, no partial
-option, so the client sees the top pick and both alternates side by side,
-never just one number with no way to judge how much the techniques agree.
-Rows are then trimmed to that horizon's own (m_start, m_end) range (e.g.
-medium keeps only steps 4-6, discarding the 1-3 that were computed only
-because most techniques can't be asked to start partway through their own
-forecast) -- this is what keeps a commodity's short/medium/long rows from
-covering the same calendar month twice with two different techniques'
-numbers.
+monthly commodity) via `ranks` -- defaults to all 3 (the client sees the
+top pick and both alternates side by side, never just one number with no
+way to judge how much the techniques agree), but can be narrowed to
+specific rank(s) via --ranks (CLI) / ranks= (programmatic) when that's
+genuinely what's wanted. Rows are then trimmed to that horizon's own
+(m_start, m_end) range (e.g. medium keeps only steps 4-6, discarding the
+1-3 that were computed only because most techniques can't be asked to
+start partway through their own forecast) -- this is what keeps a
+commodity's short/medium/long rows from covering the same calendar month
+twice with two different techniques' numbers.
 
 Non-blocking throughout, same pattern as every other batch-shaped function
 in this pipeline: a commodity/horizon/rank with no saved pickle, or whose
@@ -83,6 +86,7 @@ def _discover_commodities_with_saved_models(saved_models_root: Path) -> list[str
 def generate_consolidated_predictions(
     commodity_ids: "list[str] | None" = None,
     horizons: "list[str] | tuple[str, ...]" = HORIZON_BUCKETS,
+    ranks: "list[int] | tuple[int, ...]" = RANKS,
     saved_models_root: "Path | None" = None,
     output_root: "Path | None" = None,
 ) -> Path:
@@ -92,6 +96,8 @@ def generate_consolidated_predictions(
     commodity in commodities.yaml.
     horizons: which horizon buckets to include -- defaults to all three,
     but the client can ask for just one or two.
+    ranks: which saved rank(s) to include -- defaults to all 3 (1, 2, 3);
+    narrow to e.g. [1] for just the top pick.
     """
     saved_models_root = saved_models_root if saved_models_root is not None else SAVED_MODELS_ROOT
     if commodity_ids is None:
@@ -102,6 +108,10 @@ def generate_consolidated_predictions(
     unknown_horizons = set(horizons) - set(HORIZON_BUCKETS)
     if unknown_horizons:
         raise ValueError(f"generate_consolidated_predictions: unknown horizon(s) {sorted(unknown_horizons)}, must be from {HORIZON_BUCKETS}")
+
+    unknown_ranks = set(ranks) - set(RANKS)
+    if unknown_ranks:
+        raise ValueError(f"generate_consolidated_predictions: unknown rank(s) {sorted(unknown_ranks)}, must be from {RANKS}")
 
     display_names = _load_technique_display_names()
     generated_at = datetime.now()
@@ -120,7 +130,7 @@ def generate_consolidated_predictions(
         for horizon_bucket in horizons:
             m_start, m_end = horizon_ranges[horizon_bucket]
 
-            for rank in RANKS:
+            for rank in ranks:
                 try:
                     pickle_path = _find_saved_pickle(cid, horizon_bucket, rank, saved_models_root)
                 except FileNotFoundError:
@@ -169,17 +179,19 @@ def generate_consolidated_predictions(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate one consolidated forecast workbook across commodities/horizons, all 3 saved ranks each.")
+    parser = argparse.ArgumentParser(description="Generate one consolidated forecast workbook across commodities/horizons/ranks.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--commodities", help="Comma-separated commodity ids, e.g. copper,wheat")
     group.add_argument("--all", action="store_true", help="Every commodity that has at least one saved model")
     parser.add_argument("--horizons", default="short,medium,long", help="Comma-separated horizons (default: all three)")
+    parser.add_argument("--ranks", default="1,2,3", help="Comma-separated saved ranks to include (default: all 3)")
     args = parser.parse_args()
 
     commodity_ids = args.commodities.split(",") if args.commodities else None
     horizons = tuple(args.horizons.split(","))
+    ranks = tuple(int(r) for r in args.ranks.split(","))
 
-    out_path = generate_consolidated_predictions(commodity_ids, horizons)
+    out_path = generate_consolidated_predictions(commodity_ids, horizons, ranks)
     print(f"Wrote {out_path}")
 
 

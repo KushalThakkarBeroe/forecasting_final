@@ -46,6 +46,7 @@ from _common import (
     resolve_horizon,
     run_recursive_backtest,
     search_best_params_recursive,
+    select_important_internal_features,
 )
 
 TECHNIQUE_NAME = "LightGBM"
@@ -143,6 +144,7 @@ def run_lgbm(
 
     feature_cols = [c for c in feature_df.columns if c not in (DATE_COLUMN_NAME, price_col)]
     feature_cols = drop_multicollinear_features(feature_df, feature_cols, price_col)
+    feature_cols = select_important_internal_features(feature_df, feature_cols, price_col)
 
     param_space_fn = _param_space_short if warmup_periods == 0 else _param_space_long
     objective_min_train_size = (

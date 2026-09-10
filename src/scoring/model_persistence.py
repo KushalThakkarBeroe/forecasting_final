@@ -68,7 +68,7 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.vector_ar.var_model import VAR
 from statsmodels.tsa.vector_ar.vecm import VECM
 
-from _common import PERIODS_PER_YEAR, _safe_features_for_horizon, drop_multicollinear_features
+from _common import PERIODS_PER_YEAR, _safe_features_for_horizon, drop_multicollinear_features, select_important_internal_features
 from config_loader import PROJECT_ROOT, CommodityConfig
 from external_driver_loader import ExternalDriverData
 from external_feature_merge import gate_and_impute_drivers
@@ -133,13 +133,15 @@ def _fit_markov_switching(price_series: pd.Series, best_params: dict) -> "object
 
 
 def _feature_cols_for(feature_df: pd.DataFrame, price_col: str) -> list[str]:
-    # Same two-step derivation rf.py/lgbm.py themselves use: every column
-    # except date/price, then thinned by the same multicollinearity check
-    # (config/multicollinearity.yaml) those techniques were actually
-    # trained with -- so the saved model's feature list matches its real
-    # training, not a naive "every column" guess.
+    # Same two-stage derivation rf.py/lgbm.py themselves use: every column
+    # except date/price, then thinned by the multicollinearity check
+    # (config/multicollinearity.yaml) and the cumulative-importance check
+    # (config/internal_feature_importance.yaml) those techniques were
+    # actually trained with -- so the saved model's feature list matches
+    # its real training, not a naive "every column" guess.
     feature_cols = [c for c in feature_df.columns if c not in (DATE_COLUMN_NAME, price_col)]
-    return drop_multicollinear_features(feature_df, feature_cols, price_col)
+    feature_cols = drop_multicollinear_features(feature_df, feature_cols, price_col)
+    return select_important_internal_features(feature_df, feature_cols, price_col)
 
 
 def _fit_rf(feature_df: pd.DataFrame, price_col: str, best_params: dict) -> dict:
@@ -257,9 +259,18 @@ def _fit_direct_horizon_ext(
     covering every step this horizon's own search already tuned, using the
     same safe-feature filtering (_safe_features_for_horizon) those
     techniques use to avoid a longer-horizon prediction leaning on a
-    feature that would already be too stale by then."""
+    feature that would already be too stale by then.
+
+    feature_cols is thinned by the same multicollinearity + cumulative-
+    importance checks run_direct_horizon_backtest applies at execution
+    time (previously missing here -- this function used every raw column,
+    a real mismatch against what was actually backtested/scored for
+    rf_ext/lgbm_ext; fixed so the saved model's feature list always
+    matches its real training)."""
     scaled = derive_scaled_periods(commodity)
     feature_cols = [c for c in ext_feature_df.columns if c not in (DATE_COLUMN_NAME, price_col)]
+    feature_cols = drop_multicollinear_features(ext_feature_df, feature_cols, price_col, ext_var_cols=ext_var_cols)
+    feature_cols = select_important_internal_features(ext_feature_df, feature_cols, price_col, ext_var_cols=ext_var_cols)
     df_clean = ext_feature_df.dropna(subset=feature_cols).reset_index(drop=True)
 
     models_by_step = {}
