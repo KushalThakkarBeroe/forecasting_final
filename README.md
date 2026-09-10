@@ -50,7 +50,8 @@ commodity_forecasting_final_v1/
 │   ├── pipeline/                     <- orchestration: run one commodity, or all of them
 │   └── scripts/
 │       ├── scaffold_config.py        <- scans data/external/ and updates commodities.yaml
-│       └── predict_from_saved_model.py <- forecasts forward from a saved model pickle
+│       ├── predict_from_saved_model.py <- forecasts forward from a saved model pickle
+│       └── generate_consolidated_predictions.py <- one workbook, many commodities x horizons x all 3 ranks
 │
 ├── eda/{timestamp}/                  <- diagnostic charts + data-quality flags, one folder per run
 ├── logs/{timestamp}/                 <- run logs, one folder per run
@@ -64,7 +65,7 @@ commodity_forecasting_final_v1/
 ├── outputs/consolidated_summary.xlsx        <- cross-commodity rollup (all commodities at once)
 ├── outputs/technique_selection_history.xlsx <- which technique got confirmed each cycle
 ├── outputs/decision_log.xlsx                <- audit trail of every analyst confirm/override
-├── outputs/predictions/               <- CSVs from predict_from_saved_model.py (Section 5)
+├── outputs/predictions/               <- CSVs from predict_from_saved_model.py, workbooks from generate_consolidated_predictions.py (Section 5)
 ├── saved_models/{commodity_id}/{horizon}/   <- top-3 pickled models per commodity x horizon (Section 5)
 │
 └── tests/                            <- automated tests (Section 6)
@@ -174,6 +175,7 @@ deployment — see Section 7.
 |---|---|
 | `scaffold_config.py` | Scans `data/external/` for commodity Excel files and updates `config/commodities.yaml` + `config/drivers/candidates/{id}.yaml`. This is the **only** way new commodities get added to the registry — see Section 8. |
 | `predict_from_saved_model.py` | Loads one of `model_persistence.py`'s saved rank-1/2/3 pickles and forecasts forward from it — no re-fitting, re-searching, or touching the backtest engine. See "Predicting from a saved model" in Section 5. |
+| `generate_consolidated_predictions.py` | One workbook across many commodities × many horizons × all 3 saved ranks each, reusing `predict_from_saved_model.py`'s own forecasting dispatch rather than duplicating it. See "Generating a consolidated predictions workbook" in Section 5. |
 
 ---
 
@@ -255,6 +257,14 @@ useful while testing a config change before running the full batch.
 
 ### Run just one commodity, programmatically
 ```python
+import sys
+sys.path.insert(0, 'src')
+sys.path.insert(0, 'src/pipeline')
+sys.path.insert(0, 'src/data')
+sys.path.insert(0, 'src/features')
+sys.path.insert(0, 'src/models')
+sys.path.insert(0, 'src/scoring')
+
 from config_loader import load_commodity
 from run_horizon import run_horizon
 
@@ -471,8 +481,11 @@ months with a lot more skepticism than the ones inside its own horizon
 range. RF+ext/LightGBM+ext are the one case where this is enforced rather
 than left to judgment — see the step-skipping behavior above.
 
-**Predicting multiple commodities at once isn't built in** — the CLI takes
-exactly one `--commodity` per call. Loop it yourself:
+**This CLI takes exactly one `--commodity`/`--rank` per call.** For a
+client-facing view across many commodities and all 3 ranks at once, use
+`generate_consolidated_predictions.py` below instead — it's built
+specifically for that. A plain loop still works if you want individual
+per-call CSVs rather than one workbook:
 ```bash
 for c in copper wheat aluminum; do
   python src/scripts/predict_from_saved_model.py --commodity "$c" --horizon short --rank 1 --months 3
@@ -485,6 +498,52 @@ for that one commodity — a plain bash `for` loop doesn't stop on that (no
 the whole loop. Every commodity needs its own real `run_batch()`/
 `run_horizon()` run first (which is what actually writes `saved_models/`)
 before this loop can predict from it.
+
+### Generating a consolidated predictions workbook
+```bash
+python src/scripts/generate_consolidated_predictions.py --commodities copper,wheat --horizons short,medium
+python src/scripts/generate_consolidated_predictions.py --all --horizons short,medium,long
+python src/scripts/generate_consolidated_predictions.py --all
+```
+The third form is the same as the second — `--horizons` defaults to
+`short,medium,long` when omitted, so `--all` on its own already means
+every commodity with a saved model, across every horizon.
+
+or programmatically:
+```python
+from generate_consolidated_predictions import generate_consolidated_predictions
+xlsx_path = generate_consolidated_predictions(["copper", "wheat"], ["short", "medium"])
+```
+One workbook, many commodities × many horizons × **always all 3 saved
+ranks** (no partial option — the point is the client sees the top pick and
+both alternates side by side, never a single number with no way to judge
+how much the techniques agree). `--commodities` omitted (or `--all`) means
+every commodity that actually **has** at least one saved model — discovered
+by scanning `saved_models/`'s own subfolders, not every commodity in
+`commodities.yaml` (most of which have never been trained at all).
+
+Reuses `predict_from_saved_model.py`'s exact per-technique forecasting
+dispatch (`_forecast_from_bundle`) — no forecasting logic is duplicated
+between the two scripts, this one is pure orchestration plus the workbook
+layout. Each `(commodity, horizon)` pair forecasts out to that horizon's
+own upper bound from `horizon_defaults.yaml` (short=3, medium=6, long=18
+for a monthly commodity) via all 3 ranks, then rows are trimmed to that
+horizon's own `(m_start, m_end)` range (e.g. medium keeps only steps 4-6,
+discarding the 1-3 that were computed only because most techniques can't
+be asked to start partway through their own forecast) — this is what keeps
+a commodity's short/medium/long rows from covering the same calendar month
+twice with two different techniques' numbers. Non-blocking throughout: a
+commodity/horizon/rank with no saved pickle, or whose forecast computation
+fails outright (e.g. an ARIMAX/SARIMAX pickle saved before the `exog_cols`
+fix — Section 8), is logged and skipped, never aborts the whole run.
+
+Writes one file per generation call to
+`outputs/predictions/consolidated_predictions_{YYYY-MM-DD_HH-MM-SS}.xlsx`
+— columns: `Commodity, Region, Horizon, Rank, Technique, Composite Score,
+Model Pickle File, Trained Through, Forecast Step, Forecast Date,
+Predicted Value, Generated At`. `Model Pickle File` is the exact filename
+under `saved_models/` that produced that row, for full traceability back
+to the model.
 
 ### Run the automated tests
 ```bash

@@ -272,6 +272,42 @@ def _forecast_direct_horizon_ext(
     return np.asarray(preds), kept_steps
 
 
+def _forecast_from_bundle(bundle: dict, commodity: CommodityConfig, n_months_ahead: int) -> "tuple[list[int], np.ndarray]":
+    """The per-technique dispatch itself, factored out so both
+    predict_from_saved_model() (single commodity/horizon/rank, writes one
+    CSV) and generate_consolidated_predictions.py (many commodities x
+    horizons x all 3 ranks, writes one workbook) share the exact same
+    forecasting logic rather than duplicating this dispatch. Returns
+    (steps_used, values) -- steps_used is 1..n_months_ahead for every
+    technique except rf_ext/lgbm_ext, which only ever return the steps that
+    horizon's search actually tuned (see _forecast_direct_horizon_ext)."""
+    technique = bundle["technique"]
+    fitted = bundle["fitted"]
+    trained_through = pd.Timestamp(bundle["trained_through"])
+
+    if technique in _STATSMODELS_FORECAST_TECHNIQUES:
+        values = _forecast_statsmodels(fitted, n_months_ahead)
+        steps_used = list(range(1, n_months_ahead + 1))
+    elif technique == "markov_switching":
+        values = _forecast_markov_switching(fitted, bundle["best_params"], n_months_ahead)
+        steps_used = list(range(1, n_months_ahead + 1))
+    elif technique in _JOINT_TECHNIQUES:
+        values = _forecast_joint(technique, fitted, n_months_ahead)
+        steps_used = list(range(1, n_months_ahead + 1))
+    elif technique in _RECURSIVE_TECHNIQUES:
+        values = _forecast_recursive(fitted, commodity, trained_through, n_months_ahead)
+        steps_used = list(range(1, n_months_ahead + 1))
+    elif technique in _EXOG_TECHNIQUES:
+        values = _forecast_exog(technique, fitted, commodity, trained_through, n_months_ahead)
+        steps_used = list(range(1, n_months_ahead + 1))
+    elif technique in _DIRECT_HORIZON_TECHNIQUES:
+        values, steps_used = _forecast_direct_horizon_ext(fitted, commodity, trained_through, n_months_ahead)
+    else:
+        raise ValueError(f"predict_from_saved_model: {technique!r} is not a supported technique for prediction")
+
+    return steps_used, values
+
+
 def predict_from_saved_model(
     commodity_id: str,
     horizon_bucket: str,
@@ -294,30 +330,11 @@ def predict_from_saved_model(
     pickle_path = _find_saved_pickle(commodity_id, horizon_bucket, rank, saved_models_root)
     bundle = _load_bundle(pickle_path)
     technique = bundle["technique"]
-    fitted = bundle["fitted"]
     trained_through = pd.Timestamp(bundle["trained_through"])
     commodity = load_commodity(commodity_id)
     periods_per_year = PERIODS_PER_YEAR[commodity.frequency]
 
-    if technique in _STATSMODELS_FORECAST_TECHNIQUES:
-        values = _forecast_statsmodels(fitted, n_months_ahead)
-        steps_used = list(range(1, n_months_ahead + 1))
-    elif technique == "markov_switching":
-        values = _forecast_markov_switching(fitted, bundle["best_params"], n_months_ahead)
-        steps_used = list(range(1, n_months_ahead + 1))
-    elif technique in _JOINT_TECHNIQUES:
-        values = _forecast_joint(technique, fitted, n_months_ahead)
-        steps_used = list(range(1, n_months_ahead + 1))
-    elif technique in _RECURSIVE_TECHNIQUES:
-        values = _forecast_recursive(fitted, commodity, trained_through, n_months_ahead)
-        steps_used = list(range(1, n_months_ahead + 1))
-    elif technique in _EXOG_TECHNIQUES:
-        values = _forecast_exog(technique, fitted, commodity, trained_through, n_months_ahead)
-        steps_used = list(range(1, n_months_ahead + 1))
-    elif technique in _DIRECT_HORIZON_TECHNIQUES:
-        values, steps_used = _forecast_direct_horizon_ext(fitted, commodity, trained_through, n_months_ahead)
-    else:
-        raise ValueError(f"predict_from_saved_model: {technique!r} is not a supported technique for prediction")
+    steps_used, values = _forecast_from_bundle(bundle, commodity, n_months_ahead)
 
     future_dates = [trained_through + _period_offset(h, periods_per_year) for h in steps_used]
     result_df = pd.DataFrame({
